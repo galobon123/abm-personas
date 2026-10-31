@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: people
+  data:
+    web:
+      pageable:
+        max-page-size: 100
+        serialization-mode: via-dto
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/abm}
+    username: ${DB_USER:abm}
+    password: ${DB_PASSWORD:dev}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+server:
+  forward-headers-strategy: framework
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true

@@ -1,0 +1,10 @@
+CREATE TABLE person (
+  id UUID PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  last_name VARCHAR(100) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  birth_date DATE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  is_active BOOLEAN NOT NULL DEFAULT true
+);
+
