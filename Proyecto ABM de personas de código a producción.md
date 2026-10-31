@@ -37,7 +37,7 @@ Las cuatro piezas de producción:
 - **Salud:** `/actuator/health` con liveness y readiness separadas, y `/actuator/prometheus` para métricas (Spring Boot Actuator + Micrometer).
 - **Logs en JSON** a stdout, con un id de request en cada línea. Nada de archivos de log dentro del contenedor.
 - **Configuración por variables de entorno** (`DB_URL`, `DB_USER`, `DB_PASSWORD`), sin secretos en el repo, y migraciones de base con Flyway.
-- **Endpoints de práctica** `/debug/lento?ms=2000` y `/debug/error`, activos solo con `DEBUG_ENDPOINTS=true`. Sirven para provocar fallas en los simulacros; en un cliente real irían apagados.
+- **Endpoints de práctica** `/debug/slow?ms=2000` (entre 0 y 10000 ms) y `/debug/error` (un 500 simulado), activos solo con `DEBUG_ENDPOINTS=true`; sin la variable no existen y responden 404. Sirven para provocar fallas en los simulacros; en un cliente real irían apagados.
 
 El frontend es opcional: una página estática con `fetch` o un Angular de una sola vista, servida por Nginx. Si vas justo de tiempo, usá Swagger UI (springdoc) y listo.
 
@@ -161,7 +161,7 @@ Terminás el día sabiendo qué le pasa a tu app sin entrar a mirar el servidor.
 
 **Aprendés:** la diferencia entre logs y métricas, qué es una señal, por qué se mira el percentil 95 y no el promedio, y alertar por síntomas en lugar de por causas.
 
-**Listo cuando**, con `/debug/lento` y `/debug/error` activos y la carga corriendo, ves el pico de latencia y de errores en Grafana, te llega la alerta y encontrás en los logs la línea responsable.
+**Listo cuando**, con `/debug/slow` y `/debug/error` activos y la carga corriendo, ves el pico de latencia y de errores en Grafana, te llega la alerta y encontrás en los logs la línea responsable.
 
 ### Día 5: Terraform
 
@@ -354,22 +354,25 @@ DB_URL=jdbc:postgresql://localhost:5432/abm
 DB_USER=abm
 DB_PASSWORD=una-clave-larga-y-unica
 SERVER_ADDRESS=127.0.0.1
+SPRING_PROFILES_ACTIVE=prod
+# Solo en esta VM de práctica; con un cliente real, false o directamente sin la línea
+DEBUG_ENDPOINTS=true
 ```
 
 ```
 sudo chmod 600 /etc/abm.env
 ```
 
-`SERVER_ADDRESS=127.0.0.1` hace que la app escuche solo dentro de la VM: el único camino desde afuera será Nginx. systemd lee el archivo como root, por eso alcanza con el permiso 600.
+`SERVER_ADDRESS=127.0.0.1` hace que la app escuche solo dentro de la VM: el único camino desde afuera será Nginx. `SPRING_PROFILES_ACTIVE=prod` activa `application-prod.yaml`, que es el que pone los logs en JSON; sin esa línea salen en texto. `DEBUG_ENDPOINTS=true` prende los endpoints de los simulacros, que por defecto no existen. systemd lee el archivo como root, por eso alcanza con el permiso 600.
 
 ### Paso 5: compilar y copiar el jar
 
-En tu compu, desde la carpeta del proyecto, en PowerShell:
+En tu compu, desde la carpeta `people/` (donde está el `pom.xml`), en PowerShell:
 
 ```
 .\mvnw.cmd clean package -DskipTests
 dir target\*.jar
-scp target\abm-personas-0.0.1-SNAPSHOT.jar tu-usuario@IP-DE-LA-VM:/tmp/abm.jar
+scp target\people-0.0.1-SNAPSHOT.jar tu-usuario@IP-DE-LA-VM:/tmp/abm.jar
 ```
 
 Si tenés Maven instalado, usá `mvn clean package -DskipTests`. El nombre del jar depende del Artifact y la versión de tu `pom.xml`; ignorá el archivo `.jar.original` si aparece. Saltear los tests es solo para esta prueba manual: el pipeline del día 3 los corre siempre. En la VM:
@@ -397,7 +400,7 @@ Wants=postgresql.service
 User=abm
 WorkingDirectory=/opt/abm
 EnvironmentFile=/etc/abm.env
-ExecStart=/usr/bin/java -Xmx512m -jar /opt/abm/abm.jar
+ExecStart=/usr/bin/java -Xmx512m -Duser.timezone=UTC -jar /opt/abm/abm.jar
 Restart=on-failure
 RestartSec=5
 SuccessExitStatus=143
@@ -406,7 +409,7 @@ SuccessExitStatus=143
 WantedBy=multi-user.target
 ```
 
-`-Xmx512m` limita el heap de la JVM para que no se coma toda la memoria de la VM; `Restart=on-failure` la levanta de nuevo si se cae; y `SuccessExitStatus=143` hace que systemd trate como salida normal la que tiene la JVM al recibir la señal de apagado.
+`-Xmx512m` limita el heap de la JVM para que no se coma toda la memoria de la VM; `-Duser.timezone=UTC` fija la zona horaria de la JVM (los servidores van en UTC, y así se evita que el driver le mande a Postgres una zona que no reconoce); las dos son opciones de la JVM, por eso van antes de `-jar`. `Restart=on-failure` la levanta de nuevo si se cae; y `SuccessExitStatus=143` hace que systemd trate como salida normal la que tiene la JVM al recibir la señal de apagado.
 
 ```
 sudo systemctl daemon-reload
@@ -639,7 +642,7 @@ A partir del día 4, rompé algo cada día y diagnosticalo sin mirar cómo lo ro
 | Despliegue roto | Publicar una imagen con un bug o un tag que no existe | Pipeline, `docker compose ps`, logs de la app | Rollback rápido y por qué se versiona con SHA |
 | DNS mal apuntado | Apuntar el registro A a otra IP | `dig`, `curl -v` | Distinguir DNS, TLS y aplicación |
 | El certificado no renueva | `sudo certbot renew --dry-run` con el puerto 80 cerrado en el firewall | Salida de Certbot, `sudo certbot certificates`, `sudo ufw status` | Por qué un certificado puede vencerse en silencio si falla la renovación |
-| Pico de latencia | `/debug/lento` más una prueba de carga | p95 en Grafana, pool de conexiones | La saturación aparece antes de que haya errores |
+| Pico de latencia | `/debug/slow` más una prueba de carga | p95 en Grafana, pool de conexiones | La saturación aparece antes de que haya errores |
 | Contenedor que no arranca | Quitar una variable de entorno del `.env` | `docker compose ps`, `docker compose logs` | Leer el error real en lugar de adivinar |
 
 ## Cheatsheet de comandos
