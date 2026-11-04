@@ -2,3 +2,7 @@
 .idea/
 .env
 Thumbs.db
+
+# Certificados y claves: nunca al repo
+*.pem
+*.key
