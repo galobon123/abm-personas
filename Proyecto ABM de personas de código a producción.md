@@ -22,19 +22,21 @@ Es una semana ajustada. Si te atrasás, lo primero que podés dejar para despué
 
 La app es un CRUD mínimo, una entidad y cinco endpoints, más cuatro piezas que los tutoriales omiten y que en producción pesan más que el CRUD.
 
-La entidad `Persona` tiene `id`, `nombre`, `apellido`, `email` (único), `fecha_nacimiento` y `creado_en`.
+La entidad `Person` tiene `id` (UUIDv7), `name`, `lastName`, `email` (único), `birthDate`, `createdAt` y `active` (borrado lógico).
 
 | Método | Ruta | Qué hace |
 | --- | --- | --- |
-| GET | `/api/personas` | Lista con paginación (`page`, `size`) |
-| GET | `/api/personas/{id}` | Devuelve una persona o 404 |
-| POST | `/api/personas` | Crea; 400 si el email es inválido, 409 si ya existe |
-| PUT | `/api/personas/{id}` | Reemplaza los datos |
-| DELETE | `/api/personas/{id}` | Borra y responde 204 |
+| GET | `/api/people` | Lista con paginación (`page`, `size`, máximo 100) |
+| GET | `/api/people/{id}` | Devuelve una persona o 404 |
+| POST | `/api/people` | Crea; 400 si los datos son inválidos, 409 si el email ya existe; 201 con `Location` |
+| PUT | `/api/people/{id}` | Reemplaza los datos |
+| DELETE | `/api/people/{id}` | Borrado lógico (`active = false`) y responde 204 |
+
+Todos los errores responden con `ProblemDetail` (RFC 9457). Los inesperados se loguean como ERROR con su stack trace y responden un 500 genérico, sin detalles internos.
 
 Las cuatro piezas de producción:
 
-- **Salud:** `/actuator/health` con liveness y readiness separadas, y `/actuator/prometheus` para métricas (Spring Boot Actuator + Micrometer).
+- **Salud:** `/actuator/health` con liveness y readiness separadas, y `/actuator/prometheus` para métricas (Spring Boot Actuator + Micrometer). El Actuator escucha en un puerto propio, `127.0.0.1:8081`, que el proxy nunca reenvía: así las métricas no se pueden alcanzar desde afuera con ninguna variante de la URL.
 - **Logs en JSON** a stdout, con un id de request en cada línea. Nada de archivos de log dentro del contenedor.
 - **Configuración por variables de entorno** (`DB_URL`, `DB_USER`, `DB_PASSWORD`), sin secretos en el repo, y migraciones de base con Flyway.
 - **Endpoints de práctica** `/debug/slow?ms=2000` (entre 0 y 10000 ms) y `/debug/error` (un 500 simulado), activos solo con `DEBUG_ENDPOINTS=true`; sin la variable no existen y responden 404. Sirven para provocar fallas en los simulacros; en un cliente real irían apagados.
@@ -115,7 +117,7 @@ Terminás el día con la app en un servidor con dominio y HTTPS, instalada paso 
 
 **Aprendés:** SSH, usuarios y permisos, systemd, proxy inverso, DNS, TLS y dónde viven los logs en Linux.
 
-**Listo cuando** `curl https://tu-dominio/actuator/health` responde UP desde tu casa y la app vuelve sola después de un `sudo reboot`.
+**Listo cuando** `https://tu-dominio/api/people` responde desde tu casa, `curl http://127.0.0.1:8081/actuator/health` responde UP dentro del servidor, y la app vuelve sola después de un `sudo reboot`.
 
 Los comandos de cada paso están en [Día 1 en detalle](#mbat376t8sf.40588).
 
@@ -152,10 +154,10 @@ Terminás el día con un push a `main` que despliega solo.
 Terminás el día sabiendo qué le pasa a tu app sin entrar a mirar el servidor.
 
 - [ ] Logs: dejar la app en JSON a stdout y aprender a filtrarlos (`docker compose logs --since 10m app | grep ERROR`, `jq` sobre las líneas). Opcional: Loki con Grafana para buscarlos desde un solo lugar.
-- [ ] Métricas: Prometheus que lee `/actuator/prometheus` por la red interna de Docker, sin exponerlo a internet, y Grafana con un dashboard.
+- [ ] Métricas: Prometheus que lee `/actuator/prometheus` en el puerto de management (8081) por la red interna de Docker, sin exponerlo a internet, y Grafana con un dashboard. Ojo: dentro de un contenedor, `management.server.address` tiene que dejar de ser `127.0.0.1` para que Prometheus llegue desde otro contenedor; lo que lo protege pasa a ser no publicar ese puerto.
 - [ ] Dashboard con las cuatro señales: latencia (p95), tráfico (requests por segundo), errores (porcentaje de 5xx) y saturación (CPU, heap y conexiones del pool).
 - [ ] Una alerta simple: más de X% de errores 5xx durante 5 minutos avisa por mail o Telegram desde Grafana.
-- [ ] Un monitor externo de disponibilidad con plan gratuito (UptimeRobot u otro) apuntando a `/actuator/health`.
+- [ ] Un monitor externo de disponibilidad con plan gratuito (UptimeRobot u otro) apuntando a `/actuator/health`. Como el health vive en el puerto interno, publicalo solo a él en Nginx con `location = /actuator/health { proxy_pass http://127.0.0.1:8081; }`; con la configuración por defecto responde solo `UP` o `DOWN`, sin detalles.
 - [ ] Generar carga con k6 o `hey` mientras mirás el dashboard.
 - [ ] Acceder a Grafana por túnel SSH (`ssh -L 3000:localhost:3000 usuario@IP`) o detrás de Nginx con login; nunca abierto a internet sin contraseña.
 
@@ -231,22 +233,31 @@ Tu compu (VS Code, Maven, Git)             VM Ubuntu
 
 Creá el proyecto en [start.spring.io](https://start.spring.io) o desde VS Code con la extensión Spring Initializr. Elegí Maven, Java 21 y Jar. El Artifact, por ejemplo `abm-personas`, define el nombre del jar que vas a copiar. Dependencias: Spring Web, Spring Data JPA, PostgreSQL Driver, Flyway Migration, Validation, Spring Boot Actuator y Prometheus. No marques Spring Security: bloquea todos los endpoints hasta que lo configurás.
 
-Para desarrollar necesitás un Postgres local. Si ya tenés Docker: `docker run --name pg -e POSTGRES_USER=abm -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=abm -p 5432:5432 -d postgres:16`; si no, instalalo en tu compu. Usá la misma versión mayor que tenga la VM (comprobala con psql --version en la VM): postgres:16 en Ubuntu 24.04 y postgres:18 en Ubuntu 26.04.
+Para desarrollar necesitás un Postgres local. Si ya tenés Docker: `docker run --name pg -e POSTGRES_USER=abm -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=abm -p 127.0.0.1:5432:5432 -d postgres:16`; si no, instalalo en tu compu. El `127.0.0.1:` delante del puerto hace que la base escuche solo en tu compu: con `-p 5432:5432` a secas, cualquier dispositivo de tu red podría intentar entrar con la clave `dev`. Usá la misma versión mayor que tenga la VM (comprobala con psql --version en la VM): postgres:16 en Ubuntu 24.04 y postgres:18 en Ubuntu 26.04.
 
-La configuración sale de variables de entorno, con valores por defecto para desarrollo, en `src/main/resources/application.yml`:
+La configuración sale de variables de entorno, con valores por defecto para desarrollo, en `src/main/resources/application.yaml`:
 
 ```yaml
 spring:
+  data:
+    web:
+      pageable:
+        max-page-size: 100
+        serialization-mode: via-dto
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/abm}
     username: ${DB_USER:abm}
     password: ${DB_PASSWORD:dev}
   jpa:
+    open-in-view: false
     hibernate:
       ddl-auto: validate
 server:
   forward-headers-strategy: framework
 management:
+  server:
+    port: 8081
+    address: 127.0.0.1
   endpoints:
     web:
       exposure:
@@ -255,9 +266,13 @@ management:
     health:
       probes:
         enabled: true
+app:
+  debug-endpoints: ${DEBUG_ENDPOINTS:false}
 ```
 
-La tabla la crea Flyway con `V1__crear_persona.sql`; con `ddl-auto: validate` Hibernate solo verifica que coincida con tus entidades y no la modifica. Antes de tocar el servidor, comprobá en tu compu que el ABM responde y que `http://localhost:8080/actuator/health` devuelve `UP`.
+Los logs en JSON (formato ECS) van en `application-prod.yaml`, que solo se activa con `SPRING_PROFILES_ACTIVE=prod`; en desarrollo salen en texto. Spring no lee archivos `.env`: las variables las cargan systemd (`EnvironmentFile`) o Docker Compose.
+
+La tabla la crea Flyway con `V1__person_table.sql`; con `ddl-auto: validate` Hibernate solo verifica que coincida con tus entidades y no la modifica. Antes de tocar el servidor, comprobá en tu compu que el ABM responde y que `http://localhost:8081/actuator/health` devuelve `UP`.
 
 ### Paso 1: entrar a la VM por SSH con clave
 
@@ -280,7 +295,11 @@ ssh-keygen -t ed25519
 type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh tu-usuario@IP-DE-LA-VM "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 ```
 
-Volvé a entrar: ya no debería pedirte la contraseña de tu usuario (puede pedir la frase de la clave si le pusiste una).
+Desde WSL o cualquier Linux es más corto: `ssh-keygen -t ed25519` y `ssh-copy-id tu-usuario@IP-DE-LA-VM`. Las claves de WSL y las de Windows son independientes: la máquina desde la que copiás el jar con `scp` tiene que ser la que tiene la clave autorizada.
+
+Volvé a entrar: ya no debería pedirte la contraseña de tu usuario (puede pedir la frase de la clave si le pusiste una). Verificá el fingerprint que aceptaste la primera vez: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` en la consola de la VM tiene que coincidir con `ssh-keygen -lF IP-DE-LA-VM` en tu compu.
+
+Si `apt` falla con *"Release file ... is not valid yet"*, el reloj de la VM está atrasado: en VirtualBox tildá *Sistema → Placa base → Reloj hardware en tiempo UTC* y comprobá con `timedatectl` que NTP esté activo y sincronizado.
 
 ### Paso 2: endurecer lo básico, en la VM
 
@@ -299,6 +318,13 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
+En una VM local en modo puente, limitá las reglas a tu red de casa: si tu proveedor da IPv6, la VM puede tener una IP pública y las reglas generales la dejarían alcanzable desde internet. Primero agregás las nuevas y después borrás las generales (`sudo ufw status numbered` y `sudo ufw delete N`, de la más alta a la más baja), comprobando desde una segunda sesión que seguís entrando:
+
+```
+sudo ufw allow from 192.168.100.0/24 to any port 22 proto tcp
+sudo ufw allow from 192.168.100.0/24 to any port 80,443 proto tcp
+```
+
 Por último, sacá el login de root y por contraseña. Hacelo solo después de comprobar que entrás con clave, y con una segunda sesión abierta por si algo falla. Usá un archivo que se lea primero (`00-`), porque sshd respeta el primer valor que encuentra y en Ubuntu otro archivo de esa carpeta puede reactivar la contraseña:
 
 ```
@@ -310,6 +336,7 @@ con este contenido:
 ```
 PermitRootLogin no
 PasswordAuthentication no
+KbdInteractiveAuthentication no
 ```
 
 ```
@@ -321,21 +348,27 @@ sudo sshd -t && sudo systemctl reload ssh
 ```
 sudo apt install -y openjdk-21-jre-headless postgresql
 java -version
+psql --version
 ```
 
-Si `apt` no encuentra Java 21, tu Ubuntu es muy viejo: usá una versión LTS reciente. Creá la base y el usuario:
+Si `apt` no encuentra Java 21, tu Ubuntu es muy viejo: usá una versión LTS reciente. La versión mayor de `psql` tiene que coincidir con la de tu Postgres de desarrollo. Generá una clave aleatoria para la base con `openssl rand -hex 32` (hexadecimal: sin comillas ni símbolos que rompan el archivo de variables) y guardala en tu gestor de contraseñas. Creá la base y el usuario:
 
 ```
 sudo -u postgres psql
 ```
 
 ```
-CREATE USER abm WITH PASSWORD 'una-clave-larga-y-unica';
+CREATE USER abm;
+\password abm
 CREATE DATABASE abm OWNER abm;
+\du
+\l
 \q
 ```
 
-Verificá que la base solo escuche en la propia VM: `ss -tlnp | grep 5432` debe mostrar `127.0.0.1:5432`.
+`\password` pide la clave sin mostrarla y manda solo su hash: con `CREATE USER ... WITH PASSWORD '...'` la clave queda en texto plano en el historial de `psql`. El `OWNER abm` es necesario para que Flyway pueda crear tablas: desde Postgres 15 un usuario común no puede crear en el esquema `public`. En `\du`, `abm` tiene que aparecer sin atributos de superusuario.
+
+Verificá que la base solo escuche en la propia VM: `sudo ss -tlnp | grep 5432` debe mostrar `127.0.0.1:5432`. Antes de cada comando, mirá el hostname del prompt: es fácil correr esto en tu compu creyendo que estás en la VM.
 
 ### Paso 4: usuario de servicio y variables, en la VM
 
@@ -343,11 +376,15 @@ La app corre con un usuario sin shell y sin permisos para nada más. Sus secreto
 
 ```
 sudo useradd --system --home /opt/abm --shell /usr/sbin/nologin abm
-sudo mkdir -p /opt/abm && sudo chown abm:abm /opt/abm
+sudo mkdir -p /opt/abm
+sudo chown root:root /opt/abm
+sudo chmod 755 /opt/abm
 sudo nano /etc/abm.env
 ```
 
-con este contenido (la clave es la que usaste en `CREATE USER`):
+La carpeta y el jar son de root y la app solo puede leerlos: si un atacante controlara la app, no podría reemplazar el jar para quedarse adentro. La app no necesita escribir nada ahí, porque sus logs van a journald y sus temporales a `/tmp`.
+
+Contenido de `/etc/abm.env` (la clave es la que pusiste con `\password`; formato `CLAVE=valor`, sin espacios ni `export`):
 
 ```
 DB_URL=jdbc:postgresql://localhost:5432/abm
@@ -365,6 +402,10 @@ sudo chmod 600 /etc/abm.env
 
 `SERVER_ADDRESS=127.0.0.1` hace que la app escuche solo dentro de la VM: el único camino desde afuera será Nginx. `SPRING_PROFILES_ACTIVE=prod` activa `application-prod.yaml`, que es el que pone los logs en JSON; sin esa línea salen en texto. `DEBUG_ENDPOINTS=true` prende los endpoints de los simulacros, que por defecto no existen. systemd lee el archivo como root, por eso alcanza con el permiso 600.
 
+Verificá: `getent passwd abm` termina en `/usr/sbin/nologin`, `sudo su - abm` responde *"This account is currently not available"*, `ls -l /etc/abm.env` muestra `-rw------- root root` y `ls -ld /opt/abm` muestra `drwxr-xr-x root root`.
+
+Para leer logs sin `sudo`, sumá tu usuario al grupo `adm`, que puede leer el journal y `/var/log` pero no cambiar nada: `sudo usermod -aG adm tu-usuario`, y volvé a entrar por SSH. Sin la `-a`, `usermod` reemplaza todos tus grupos y te saca de `sudo`.
+
 ### Paso 5: compilar y copiar el jar
 
 En tu compu, desde la carpeta `people/` (donde está el `pom.xml`), en PowerShell:
@@ -375,12 +416,17 @@ dir target\*.jar
 scp target\people-0.0.1-SNAPSHOT.jar tu-usuario@IP-DE-LA-VM:/tmp/abm.jar
 ```
 
-Si tenés Maven instalado, usá `mvn clean package -DskipTests`. El nombre del jar depende del Artifact y la versión de tu `pom.xml`; ignorá el archivo `.jar.original` si aparece. Saltear los tests es solo para esta prueba manual: el pipeline del día 3 los corre siempre. En la VM:
+Si tenés Maven instalado, usá `mvn clean package -DskipTests`. El nombre del jar depende del Artifact y la versión de tu `pom.xml`; ignorá el archivo `.jar.original` si aparece. Saltear los tests es solo para esta prueba manual: el pipeline del día 3 los corre siempre.
+
+Si tu clave SSH vive en WSL, el `scp` va desde WSL, donde el disco de Windows se ve en `/mnt/c/`: `scp /mnt/c/.../people/target/people-0.0.1-SNAPSHOT.jar tu-usuario@IP-DE-LA-VM:/tmp/abm.jar`. Comprobá que llegó entero comparando `sha256sum` en los dos lados; la fecha del jar no sirve, porque Spring Boot la fija para que el build sea reproducible. En la VM:
 
 ```
-sudo mv /tmp/abm.jar /opt/abm/abm.jar
-sudo chown abm:abm /opt/abm/abm.jar
+sudo install -o root -g root -m 644 /tmp/abm.jar /opt/abm/abm.jar
+rm /tmp/abm.jar
+ls -l /opt/abm/
 ```
+
+`install` copia y pone dueño y permisos en un solo paso; `mv` conservaría el dueño original (tu usuario).
 
 ### Paso 6: la app como servicio de systemd, en la VM
 
@@ -404,6 +450,10 @@ ExecStart=/usr/bin/java -Xmx512m -Duser.timezone=UTC -jar /opt/abm/abm.jar
 Restart=on-failure
 RestartSec=5
 SuccessExitStatus=143
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target
@@ -411,15 +461,20 @@ WantedBy=multi-user.target
 
 `-Xmx512m` limita el heap de la JVM para que no se coma toda la memoria de la VM; `-Duser.timezone=UTC` fija la zona horaria de la JVM (los servidores van en UTC, y así se evita que el driver le mande a Postgres una zona que no reconoce); las dos son opciones de la JVM, por eso van antes de `-jar`. `Restart=on-failure` la levanta de nuevo si se cae; y `SuccessExitStatus=143` hace que systemd trate como salida normal la que tiene la JVM al recibir la señal de apagado.
 
+Las cuatro últimas líneas de `[Service]` encierran al proceso: nunca puede ganar privilegios (`NoNewPrivileges`), tiene su propio `/tmp` (`PrivateTmp`), ve todo el sistema de archivos como solo lectura (`ProtectSystem=strict`) y no ve `/home` ni `/root` (`ProtectHome`). `systemd-analyze security abm` da un puntaje de exposición del servicio.
+
 ```
 sudo systemctl daemon-reload
 sudo systemctl enable --now abm
 systemctl status abm
 journalctl -u abm -f
-curl http://127.0.0.1:8080/actuator/health
+curl http://127.0.0.1:8081/actuator/health
+ps -o user,pid,cmd -C java
 ```
 
-El último comando debería devolver `UP`. Si la app no arranca, el motivo está en las últimas líneas de `journalctl -u abm`.
+El `curl` debería devolver `UP` y el `ps` tiene que mostrar el proceso con el usuario `abm`. En los logs fijate que salgan en JSON (perfil prod activo) y que Flyway haya creado la tabla. Si la app no arranca, el motivo está en `journalctl -u abm -n 80 --no-pager`.
+
+**Cada redeploy**: instalar el jar nuevo, `sudo systemctl restart abm`, esperar el `Started PeopleApplication` y verificar. Java carga el jar al arrancar: si no reiniciás, sigue corriendo el viejo aunque el archivo en disco sea el nuevo. La hora de `Active: ... since` en `systemctl status` tiene que ser posterior a la del archivo.
 
 ### Paso 7: Nginx como proxy inverso, en la VM
 
@@ -435,21 +490,19 @@ server {
     listen 80;
     server_name abm.local;
 
-    location = /actuator/prometheus {
-        return 404;
-    }
-
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
 
-El bloque de `/actuator/prometheus` evita que las métricas queden públicas: Nginx reenvía todo lo demás a la app, y ese endpoint solo tiene que verlo Prometheus por dentro de la VM. Activá el sitio:
+No hace falta bloquear `/actuator/prometheus` en Nginx: el Actuator vive en `127.0.0.1:8081` y Nginx solo reenvía al 8080. Un bloqueo con `location = /actuator/prometheus` se saltea con `/actuator/prometheus;x`, porque Tomcat descarta el `;x` y Nginx no. `X-Forwarded-For` se pisa con `$remote_addr` porque Nginx es la primera puerta: `$proxy_add_x_forwarded_for` agregaría la IP real a lo que mande el cliente, y Spring tomaría la primera, que puede ser falsa. Se usa `$proxy_add_...` solo cuando hay otro proxy de confianza delante, como Cloudflare.
+
+En `/etc/nginx/nginx.conf`, descomentá `server_tokens off;` dentro de `http { }` para que Nginx no anuncie su versión. Activá el sitio:
 
 ```
 sudo ln -s /etc/nginx/sites-available/abm /etc/nginx/sites-enabled/abm
@@ -457,27 +510,35 @@ sudo rm /etc/nginx/sites-enabled/default
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Desde el navegador de tu compu probá `http://IP-DE-LA-VM/actuator/health`.
+Desde tu compu probá `curl -i http://IP-DE-LA-VM/api/people`: la cabecera `Server` tiene que decir solo `nginx`. Un POST tiene que devolver un `Location` con la IP de la VM y no con `127.0.0.1:8080`, prueba de que las cabeceras `X-Forwarded-*` funcionan. `/actuator/health` y `/actuator/prometheus;x` tienen que dar 404 desde afuera.
 
 ### Paso 8: HTTPS
 
 La opción depende de si tu servidor es una VM local o uno real con dominio.
 
-**Opción A, VM local con mkcert.** En tu compu, instalá [mkcert](https://github.com/FiloSottile/mkcert) (con winget, Chocolatey o Scoop) y generá el certificado:
+**Opción A, VM local con mkcert.** En tu compu, en PowerShell, instalá [mkcert](https://github.com/FiloSottile/mkcert) (`winget install FiloSottile.mkcert`) y generá el certificado en una carpeta **fuera del repo y de OneDrive**:
 
 ```
+$env:TRUST_STORES = "system"
 mkcert -install
+mkdir C:\Users\tu-usuario\certs
+cd C:\Users\tu-usuario\certs
 mkcert abm.local
-scp abm.local.pem abm.local-key.pem tu-usuario@IP-DE-LA-VM:/tmp/
 ```
 
-Editá como administrador el archivo `C:\Windows\System32\drivers\etc\hosts` y agregá una línea con la IP de la VM y el nombre: `IP-DE-LA-VM abm.local`. En la VM:
+`TRUST_STORES=system` instala la CA solo en Windows (lo que usan Edge y Chrome) y no en el `cacerts` de Java, que además pide permisos de administrador. `mkcert -CAROOT` muestra dónde quedó la CA: su `rootCA-key.pem` firma certificados válidos en tu compu para cualquier dominio, así que nunca se copia ni se comparte. A la VM solo van `abm.local.pem` (público) y `abm.local-key.pem` (secreto). Copialos con `scp` desde donde tengas la clave SSH.
+
+Editá como administrador el archivo `C:\Windows\System32\drivers\etc\hosts` y agregá una línea con la IP de la VM y el nombre: `IP-DE-LA-VM abm.local`. WSL copia esas entradas al arrancar (`wsl --shutdown` para que las tome). En la VM:
 
 ```
 sudo mkdir -p /etc/ssl/abm
-sudo mv /tmp/abm.local.pem /tmp/abm.local-key.pem /etc/ssl/abm/
-sudo chmod 600 /etc/ssl/abm/abm.local-key.pem
+sudo install -o root -g root -m 644 /tmp/abm.local.pem /etc/ssl/abm/
+sudo install -o root -g root -m 600 /tmp/abm.local-key.pem /etc/ssl/abm/
+rm /tmp/abm.local.pem /tmp/abm.local-key.pem
+openssl x509 -in /etc/ssl/abm/abm.local.pem -noout -subject -issuer -dates -ext subjectAltName
 ```
+
+La clave queda legible solo por root: Nginx la lee al arrancar como root y atiende con procesos `www-data`. El `rm` borra las copias de `/tmp`, que cualquier usuario podía leer.
 
 Reemplazá el contenido de `/etc/nginx/sites-available/abm` por:
 
@@ -495,21 +556,19 @@ server {
     ssl_certificate     /etc/ssl/abm/abm.local.pem;
     ssl_certificate_key /etc/ssl/abm/abm.local-key.pem;
 
-    location = /actuator/prometheus {
-        return 404;
-    }
-
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
 
-Recargá con `sudo nginx -t && sudo systemctl reload nginx` y abrí `https://abm.local/actuator/health`: tiene que mostrar el candado sin advertencias. Los certificados de mkcert solo los acepta una compu donde corriste `mkcert -install`, así que sirven para practicar, nunca para algo público.
+En `/etc/nginx/nginx.conf`, dejá `ssl_protocols TLSv1.2 TLSv1.3;`: Ubuntu trae también TLS 1.0 y 1.1, que tienen debilidades conocidas.
+
+Recargá con `sudo nginx -t && sudo systemctl reload nginx` y abrí `http://abm.local/api/people` en Edge o Chrome: tiene que redirigir a HTTPS y mostrar el candado sin advertencias. Un POST tiene que devolver un `Location` que empiece con `https://abm.local/`. Desde WSL, `curl` usa las CAs de Linux, así que hay que pasarle la tuya: `curl --cacert /mnt/c/Users/tu-usuario/AppData/Local/mkcert/rootCA.pem https://abm.local/api/people`; sin `--cacert` falla con *"unable to get local issuer certificate"*, que es justamente lo que verías ante un certificado falso. Los certificados de mkcert solo los acepta una compu donde corriste `mkcert -install`, así que sirven para practicar, nunca para algo público.
 
 **Opción B, servidor real con dominio.** El registro A del dominio tiene que apuntar a la IP pública del servidor, con los puertos 80 y 443 alcanzables, y `server_name` en Nginx con tu dominio en lugar de `abm.local`:
 
@@ -525,24 +584,39 @@ Certbot edita la configuración de Nginx por vos; el último comando comprueba q
 
 ```
 journalctl -u abm -f                          # logs de la app en vivo
-journalctl -u abm --since '10 min ago' -p err # solo errores recientes
-sudo tail -f /var/log/nginx/access.log        # cada pedido que llega
-ss -tlnp                                      # qué escucha en cada puerto
+tail -f /var/log/nginx/access.log             # cada pedido que llega (grupo adm)
+sudo ss -tlnp                                 # qué escucha en cada puerto
 htop ; df -h                                  # CPU, memoria y disco
 ```
 
-En `ss -tlnp`, los puertos 22, 80 y 443 escuchan hacia afuera y los puertos 5432 y 8080 solo en `127.0.0.1`. Si ves 5432 u 8080 abiertos a todas las interfaces, volvé a los pasos 3 y 4.
+`journalctl -p err` no sirve para esta app: journald le da prioridad "info" a todo lo que llega por stdout, y el nivel real está dentro del JSON. Filtrá con `jq` (`sudo apt install -y jq`):
 
-Ejercicio: detené la base con `sudo systemctl stop postgresql`, pedí `/api/personas` desde el navegador, y buscá el error en `journalctl -u abm` y el código 500 en el log de Nginx. Después arrancala con `sudo systemctl start postgresql` y comprobá que la app se recupera sola. Para cerrar el día, la prueba de fuego: `sudo reboot`, esperá un minuto y verificá que `systemctl status abm` está activo y que el navegador abre la app sin que hagas nada.
+```
+# resumen de los errores recientes
+journalctl -u abm -o cat --since '10 min ago' | jq -R 'fromjson? | select(.log.level == "ERROR") | {time: ."@timestamp", requestId, type: .error.type, msg: .error.message}'
+# solo las líneas útiles del stack trace: la excepción, los Caused by y tu código
+journalctl -u abm -o cat --since '10 min ago' | jq -R -r 'fromjson? | select(.log.level == "ERROR") | .error.stack_trace' | grep -E '^[^[:space:]]|com\.abm'
+```
+
+`fromjson?` ignora las líneas que no son JSON, como las de systemd. Con `curl`, usá `-sS` y no solo `-s`: `-s` también oculta los errores de conexión.
+
+En `ss -tlnp`, los puertos 22, 80 y 443 escuchan hacia afuera y los puertos 5432, 8080 y 8081 solo en `127.0.0.1`. Si ves alguno de esos tres abierto a todas las interfaces, volvé a los pasos 3, 4 y 0.
+
+Ejercicio: detené la base con `sudo systemctl stop postgresql`, pedí `/api/people` desde el navegador, y buscá el error en `journalctl -u abm` y el código 500 en el log de Nginx. El error tarda unos 30 segundos, el tiempo que el pool de conexiones espera a la base, y mientras tanto `curl http://127.0.0.1:8081/actuator/health` responde 503 con `DOWN`. Después arrancala con `sudo systemctl start postgresql` y comprobá que la app se recupera sola, sin reiniciarla. Para cerrar el día, la prueba de fuego: `sudo reboot`, esperá un minuto y verificá que `systemctl status abm` está activo y que el navegador abre la app sin que hagas nada. `journalctl -u abm -b` muestra los logs desde ese arranque.
 
 ### Problemas comunes del día 1
 
 | Síntoma | Causa probable | Qué mirar |
 | --- | --- | --- |
-| El SSH da timeout o `refused` | Red de la VM mal configurada, o `ssh` no está corriendo | `hostname -I` en la VM y `systemctl status ssh` |
+| SSH: `No route to host` | Nadie responde en esa IP: la VM cambió de IP o está apagada | `ip -br a` en la consola de la VM; una reserva DHCP en el router lo evita |
+| SSH: `Connection timed out` | Un firewall descarta los paquetes | `sudo ufw status` |
+| SSH: `Connection refused` | La máquina responde pero `ssh` no está corriendo | `systemctl status ssh` |
+| `apt update`: *"is not valid yet"* | El reloj de la VM está atrasado | `timedatectl`; reloj hardware en UTC en VirtualBox |
+| `journalctl` no muestra nada sin `sudo` | Tu usuario no está en el grupo `adm` | `groups`; `sudo usermod -aG adm tu-usuario` |
+| El cambio no se ve después del deploy | Instalaste el jar pero no reiniciaste | La hora de `Active:` en `systemctl status abm` contra la del jar |
 | `Permission denied (publickey)` | La clave no quedó en `authorized_keys` o los permisos son de más | `~/.ssh` en 700 y `authorized_keys` en 600 |
 | 502 Bad Gateway en Nginx | La app no está corriendo | `systemctl status abm` y `journalctl -u abm` |
-| `password authentication failed` al arrancar | La clave de `/etc/abm.env` no coincide con la de Postgres | Revisá el archivo, o resetéala con `ALTER USER abm WITH PASSWORD '...';` |
+| `password authentication failed` al arrancar | La clave de `/etc/abm.env` no coincide con la de Postgres | Revisá el archivo, o resetéala con `\password abm` en `sudo -u postgres psql` |
 | Error de Flyway o de Hibernate al arrancar | La migración no coincide con las entidades | La primera línea `Caused by` de `journalctl -u abm` |
 | Advertencia de certificado en el navegador | No corriste `mkcert -install`, o entrás por IP en lugar de `abm.local` | La barra de direcciones y el archivo `hosts` |
 | `sshd -t` muestra un error | Un typo en el archivo de configuración | Corregilo antes de recargar; tu sesión abierta sigue funcionando |
@@ -654,7 +728,7 @@ Son los comandos que vas a repetir cien veces; tipealos vos en lugar de copiarlo
 ```
 ssh -i ~/.ssh/clave usuario@IP          # entrar al servidor
 journalctl -u abm -f                    # logs de un servicio systemd, en vivo
-journalctl -u abm --since '1 hour ago' -p err
+journalctl -u abm -o cat --since '1 hour ago' | jq -R 'fromjson? | select(.log.level == "ERROR")'
 systemctl status abm                    # estado; también restart, enable
 ss -tlnp                                # qué escucha en cada puerto
 df -h ; du -sh /var/lib/docker/*        # disco
