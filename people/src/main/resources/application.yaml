@@ -17,6 +17,9 @@ spring:
 server:
   forward-headers-strategy: framework
 management:
+  server:
+    port: 8081
+    address: 127.0.0.1
   endpoints:
     web:
       exposure:
