@@ -27,6 +27,6 @@ public class DebugController {
 
     @GetMapping("/error")
     public void errorEndpoint() {
-        throw new IllegalStateException("This is a test exception");
+        throw new IllegalStateException("Test exception");
     }
 }
