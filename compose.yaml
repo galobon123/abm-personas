@@ -1,12 +1,12 @@
 services:
   db:
-    image: postgres:16
+    image: postgres:18
     environment:
       POSTGRES_USER: abm
       POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD environment variable is not set}
       POSTGRES_DB: abm
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "abm", "-d", "abm"]
       interval: 5s
