@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: abm
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD environment variable is not set}
+      POSTGRES_DB: abm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "abm", "-d", "abm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build: ./people
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/abm
+      DB_USER: abm
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD environment variable is not set}
+      SPRING_PROFILES_ACTIVE: prod
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27
+    ports:
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+    volumes:
+      - ./nginx/abm.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${CERTS_DIR:?CERTS_DIR environment variable is not set}:/etc/nginx/certs:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+  
+volumes:
+  pgdata:
